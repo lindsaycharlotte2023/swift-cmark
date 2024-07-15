@@ -315,6 +315,8 @@ const char *cmark_node_get_type_string(cmark_node *node) {
     return "image";
   case CMARK_NODE_ATTRIBUTE:
     return "attribute";
+  case CMARK_NODE_MATH_BLOCK:
+    return "math";
   }
 
   return "<unknown>";

@@ -447,7 +447,8 @@ int cmark_node_set_literal(cmark_node *node, const char *content) {
   case CMARK_NODE_FOOTNOTE_REFERENCE:
     cmark_chunk_set_cstr(NODE_MEM(node), &node->as.literal, content);
     return 1;
-
+          
+  case CMARK_NODE_MATH_BLOCK:
   case CMARK_NODE_CODE_BLOCK:
     cmark_chunk_set_cstr(NODE_MEM(node), &node->as.code.literal, content);
     return 1;

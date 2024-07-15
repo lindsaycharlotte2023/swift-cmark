@@ -25,6 +25,7 @@ static const char *RIGHTSINGLEQUOTE = "\xE2\x80\x99";
 // Macros for creating various kinds of simple.
 #define make_str(subj, sc, ec, s) make_literal(subj, CMARK_NODE_TEXT, sc, ec, s)
 #define make_code(subj, sc, ec, s) make_literal(subj, CMARK_NODE_CODE, sc, ec, s)
+#define make_math_block(subj, sc, ec, s) make_block(subj, CMARK_NODE_MATH_BLOCK, sc, ec, s)
 #define make_raw_html(subj, sc, ec, s) make_literal(subj, CMARK_NODE_HTML_INLINE, sc, ec, s)
 #define make_linebreak(mem) make_simple(mem, CMARK_NODE_LINEBREAK)
 #define make_softbreak(mem) make_simple(mem, CMARK_NODE_SOFTBREAK)
@@ -66,8 +67,10 @@ typedef struct subject{
   delimiter *last_delim;
   bracket *last_bracket;
   bufsize_t backticks[MAXBACKTICKS + 1];
+  bool just_closed_dollar_env;
   bool scanned_for_backticks;
   bool no_link_openers;
+  bool scanned_for_dollar_instead_of_backtick;
 } subject;
 
 void cmark_set_default_skip_chars(int8_t **skip_chars, bool use_memcpy) {
@@ -106,6 +109,23 @@ static inline cmark_node *make_literal(subject *subj, cmark_node_type t,
   e->end_column = end_column + 1 + subj->column_offset + subj->block_offset;
   return e;
 }
+
+// Create a math block with a literal string value.
+static cmark_node *make_block(subject *subj, cmark_node_type t,
+                                             int start_column, int end_column,
+                                             cmark_chunk s) {
+  cmark_node *e = (cmark_node *)subj->mem->calloc(1, sizeof(*e));
+  cmark_strbuf_init(subj->mem, &e->content, 0);
+  e->type = (uint16_t)t;
+  e->as.code.info = cmark_chunk_literal("math");
+  e->as.code.literal = s;
+  e->start_line = e->end_line = subj->line;
+  // columns are 1 based.
+  e->start_column = start_column + 1 + subj->column_offset + subj->block_offset;
+  e->end_column = end_column + 1 + subj->column_offset + subj->block_offset;
+  return e;
+}
+
 
 // Create an inline with no value.
 static inline cmark_node *make_simple(cmark_mem *mem, cmark_node_type t) {
@@ -211,9 +231,11 @@ static void subject_from_buf(cmark_mem *mem, int line_number, int block_offset, 
   }
   e->scanned_for_backticks = false;
   e->no_link_openers = true;
+  e->scanned_for_dollar_instead_of_backtick = false;
+  e->just_closed_dollar_env = false;
 }
-
-static inline int isbacktick(int c) { return (c == '`'); }
+static inline int is_dollar(int c) { return c == '$'; }
+static inline int is_backtick_or_dollar(int c) { return (c == '`'|| c == '$'); }
 
 static inline unsigned char peek_char_n(subject *subj, bufsize_t n) {
   // NULL bytes should have been stripped out by now.  If they're
@@ -262,10 +284,11 @@ static inline bool skip_line_end(subject *subj) {
 
 // Take characters while a predicate holds, and return a string.
 static inline cmark_chunk take_while(subject *subj, int (*f)(int)) {
-  unsigned char c;
+  //unsigned char c;
   bufsize_t startpos = subj->pos;
   bufsize_t len = 0;
-
+  unsigned char c = peek_char(subj);
+  subj->scanned_for_dollar_instead_of_backtick = is_dollar(c);
   while ((c = peek_char(subj)) && (*f)(c)) {
     advance(subj);
     len++;
@@ -320,10 +343,17 @@ static void adjust_subj_node_newlines(subject *subj, cmark_node *node, int match
 // parsed).  Return 0 if you don't find matching closing
 // backticks, otherwise return the position in the subject
 // after the closing backticks.
-static bufsize_t scan_to_closing_backticks(subject *subj,
+static bufsize_t scan_to_closing_backticks_or_dollars(subject *subj,
                                            bufsize_t openticklength) {
 
   bool found = false;
+    
+    
+  char target;
+  if (subj->scanned_for_dollar_instead_of_backtick)
+      target = '$';
+ else
+      target = '`';
   if (openticklength > MAXBACKTICKS) {
     // we limit backtick string length because of the array subj->backticks:
     return 0;
@@ -336,14 +366,14 @@ static bufsize_t scan_to_closing_backticks(subject *subj,
   while (!found) {
     // read non backticks
     unsigned char c;
-    while ((c = peek_char(subj)) && c != '`') {
+    while ((c = peek_char(subj)) && c != target) {
       advance(subj);
     }
     if (is_eof(subj)) {
       break;
     }
     bufsize_t numticks = 0;
-    while (peek_char(subj) == '`') {
+    while (peek_char(subj) == target) {
       advance(subj);
       numticks++;
     }
@@ -352,6 +382,8 @@ static bufsize_t scan_to_closing_backticks(subject *subj,
       subj->backticks[numticks] = subj->pos - numticks;
     }
     if (numticks == openticklength) {
+        if (is_dollar(target))
+            subj->just_closed_dollar_env = true;
       return (subj->pos);
     }
   }
@@ -399,26 +431,42 @@ static void S_normalize_code(cmark_strbuf *s) {
 
 // Parse backtick code section or raw backticks, return an inline.
 // Assumes that the subject has a backtick at the current position.
-static cmark_node *handle_backticks(subject *subj, int options) {
+static cmark_node *handle_backticks_or_dollars(subject *subj, int options) {
   bufsize_t initpos = subj->pos;
-  cmark_chunk openticks = take_while(subj, isbacktick);
+  cmark_chunk openticks = take_while(subj, is_backtick_or_dollar);
   bufsize_t startpos = subj->pos;
-  bufsize_t endpos = scan_to_closing_backticks(subj, openticks.len);
+  bufsize_t endpos = scan_to_closing_backticks_or_dollars(subj, openticks.len);
 
   if (endpos == 0) {      // not found
     subj->pos = startpos; // rewind
     return make_str(subj, initpos, initpos + openticks.len - 1, openticks);
   } else {
-    cmark_strbuf buf = CMARK_BUF_INIT(subj->mem);
+      if (is_dollar(openticks.data[0]) && openticks.len >= 2) {
+            // process display style math
+            cmark_strbuf buf = CMARK_BUF_INIT(subj->mem);
 
-    cmark_strbuf_set(&buf, subj->input.data + startpos,
-                     endpos - startpos - openticks.len);
-    S_normalize_code(&buf);
+            cmark_strbuf_set(&buf, subj->input.data + startpos,
+                            endpos - startpos - openticks.len);
+            S_normalize_code(&buf);
 
-    cmark_node *node = make_code(subj, startpos, endpos - openticks.len - 1, cmark_chunk_buf_detach(&buf));
-    node->backtick_count = openticks.len;
-    adjust_subj_node_newlines(subj, node, endpos - startpos, openticks.len, options);
-    return node;
+            cmark_node *node = make_math_block(subj, startpos, endpos - openticks.len - 1, cmark_chunk_buf_detach(&buf));
+
+            // Finding: as.code.info.data is pointing to as.literal.data.
+            adjust_subj_node_newlines(subj, node, endpos - startpos, openticks.len, options);
+            return node;
+      }else {
+          cmark_strbuf buf = CMARK_BUF_INIT(subj->mem);
+
+          cmark_strbuf_set(&buf, subj->input.data + startpos,
+                           endpos - startpos - openticks.len);
+          S_normalize_code(&buf);
+
+          cmark_node *node = make_code(subj, startpos, endpos - openticks.len - 1, cmark_chunk_buf_detach(&buf));
+          node->backtick_count = openticks.len;
+          adjust_subj_node_newlines(subj, node, endpos - startpos, openticks.len, options);
+          return node;
+      }
+
   }
 }
 
@@ -1519,7 +1567,7 @@ static cmark_node *handle_newline(subject *subj) {
 void cmark_set_default_special_chars(int8_t **special_chars, bool use_memcpy) {
   static int8_t default_special_chars[256] = {
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1,
         1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -1617,8 +1665,26 @@ static int parse_inline(cmark_parser *parser, subject *subj, cmark_node *parent,
       new_inl = handle_newline(subj);
     }
     break;
-  case '`':
-    new_inl = handle_backticks(subj, options);
+//  case '`':
+//    new_inl = handle_backticks(subj, options);
+    case '`':
+    case '$':
+        new_inl = handle_backticks_or_dollars(subj, options);
+          
+          if (subj->just_closed_dollar_env && new_inl->type != CMARK_NODE_MATH_BLOCK) {
+            // successfully parsed single dollar expression, add dollar before and after it (for gitlab's math_filter.rb)
+            cmark_node *dollar = make_str(subj, subj->pos, subj->pos,
+                              cmark_chunk_dup(&subj->input, subj->pos-1, 1));
+            cmark_node_append_child(parent, dollar);
+            cmark_node_append_child(parent, new_inl);
+
+            // the last dollar is appended after switch
+            new_inl = make_str(subj, subj->pos, subj->pos,
+                               cmark_chunk_dup(&subj->input, subj->pos-1, 1));
+          }
+          subj->just_closed_dollar_env = false;
+
+          break;
     break;
   case '\\':
     new_inl = handle_backslash(parser, subj);

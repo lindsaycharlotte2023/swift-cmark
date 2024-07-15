@@ -212,7 +212,8 @@ static int S_render_node(cmark_html_renderer *renderer, cmark_node *node,
       cmark_strbuf_puts(html, ">\n");
     }
     break;
-
+  
+  case CMARK_NODE_MATH_BLOCK:
   case CMARK_NODE_CODE_BLOCK:
     cmark_html_render_cr(html);
 

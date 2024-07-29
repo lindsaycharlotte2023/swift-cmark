@@ -25,7 +25,7 @@ static const char *RIGHTSINGLEQUOTE = "\xE2\x80\x99";
 // Macros for creating various kinds of simple.
 #define make_str(subj, sc, ec, s) make_literal(subj, CMARK_NODE_TEXT, sc, ec, s)
 #define make_code(subj, sc, ec, s) make_literal(subj, CMARK_NODE_CODE, sc, ec, s)
-#define make_math_block(subj, sc, ec, s) makeMath_block(subj, CMARK_NODE_MATH_BLOCK, sc, ec, s)
+#define make_math_block(subj, sc, ec, s) make_block_math(subj, CMARK_NODE_MATH_BLOCK, sc, ec, s)
 #define make_raw_html(subj, sc, ec, s) make_literal(subj, CMARK_NODE_HTML_INLINE, sc, ec, s)
 #define make_linebreak(mem) make_simple(mem, CMARK_NODE_LINEBREAK)
 #define make_softbreak(mem) make_simple(mem, CMARK_NODE_SOFTBREAK)
@@ -111,7 +111,7 @@ static inline cmark_node *make_literal(subject *subj, cmark_node_type t,
 }
 
 // Create a math block with a literal string value.
-static cmark_node *makeMath_block(subject *subj, cmark_node_type t,
+static cmark_node *make_block_math(subject *subj, cmark_node_type t,
                                              int start_column, int end_column,
                                              cmark_chunk s) {
   cmark_node *e = (cmark_node *)subj->mem->calloc(1, sizeof(*e));

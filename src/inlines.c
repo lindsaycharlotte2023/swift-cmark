@@ -1563,7 +1563,7 @@ static cmark_node *handle_newline(subject *subj) {
   }
 }
 
-// "\r\n\\`&_*[]<!"
+// "\r\n\\`&_*[]<!$"
 void cmark_set_default_special_chars(int8_t **special_chars, bool use_memcpy) {
   static int8_t default_special_chars[256] = {
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
